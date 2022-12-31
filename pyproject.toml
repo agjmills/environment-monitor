@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "environment-monitor"
+version = "0.1.0"
+description = "A raspberry pi environment monitor"
+authors = ["Alex Mills <alex@alexmills.uk>"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "environment_monitor"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+requests = "^2.28.1"
+influxdb = "^5.3.1"
+ST7735 = "^0.0.4.post1"
+pimoroni-bme280 = "^0.1.1"
+Pillow = "^9.3.0"
+"RPi.GPIO" = "^0.7.1"
+
+[tool.poetry.group.dev.dependencies]
+pylint = "^2.15.9"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
