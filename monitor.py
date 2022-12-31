@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
 
 import time
-import colorsys
 import sys
+import logging
+from subprocess import PIPE, Popen
 import ST7735
-from requests import ConnectionError
+import requests
 from influxdb import InfluxDBClient
 from bme280 import BME280
-from subprocess import PIPE, Popen
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
 from fonts.ttf import RobotoMedium as UserFont
-import logging
 
 logging.basicConfig(
     format='%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s',
     level=logging.INFO,
     datefmt='%Y-%m-%d %H:%M:%S')
 
-logging.info("""monitor.py - Displays readings from BME280 sensors, output to ST7735 displays.
+logging.info("""monitor.py - Displays readings from a BME280 sensor, output to a ST7735 display.
 
 Press Ctrl+C to exit!
-
 """)
 
 # BME280 temperature/pressure/humidity sensor
@@ -38,15 +36,12 @@ HEIGHT = st7735.height
 # Set up canvas and font
 img = Image.new('RGB', (WIDTH, HEIGHT), color=(0, 0, 0))
 draw = ImageDraw.Draw(img)
-font_size_small = 10
-font_size_large = 15
-font = ImageFont.truetype(UserFont, font_size_large)
-smallfont = ImageFont.truetype(UserFont, font_size_small)
-x_offset = 2
-y_offset = 2
+font = ImageFont.truetype(UserFont, 15)
+X_OFFSET = 2
+Y_OFFSET = 2
 
-message = ""
-top_pos = 25
+MESSAGE = ""
+TOP_POS = 25
 
 variables = [
                 "temperature",
@@ -76,42 +71,68 @@ values = {}
 
 client = InfluxDBClient(host="192.168.0.2", port=8086, database='environment')
 
-
-# Iterate through the variables List, retrieve the value from the data array, display 
+# Iterate through the variables List, retrieve the value from the values Dict, display
 # in the appropriate colour
 def display_everything():
     draw.rectangle((0, 0, WIDTH, HEIGHT), (0, 0, 0))
     column_count = 1
     row_count = (len(variables) / column_count)
-    for i in range(len(variables)):
-        variable = variables[i]
-        data_value = values[variable][-1]
-        unit = units[i]
-        x = x_offset + ((WIDTH // column_count) * (i // row_count))
-        y = y_offset + ((HEIGHT / row_count) * (i % row_count))
-        message = "{}: {:.1f} {}".format(variable, data_value, unit)
-        lim = limits[i]
+    for index, variable in enumerate(variables):
+        data_value = values[variable]
+        unit = units[index]
+        x_center = X_OFFSET + ((WIDTH // column_count) * (index// row_count))
+        y_center = Y_OFFSET + ((HEIGHT / row_count) * (index % row_count))
+        message = f"{variable}: {data_value} {unit}"
+        variable_limits = limits[index]
         rgb = palette[0]
-        for j in range(len(lim)):
-            if data_value > lim[j]:
-                rgb = palette[j + 1]
-        draw.text((x, y), message, font=font, fill=rgb)
+        for jindex, limit in enumerate(variable_limits):
+            if data_value > limit:
+                rgb = palette[jindex + 1]
+        draw.text((x_center, y_center), message, font=font, fill=rgb)
     st7735.display(img)
 
-# Saves the data to be used in the display
+
 def save_data(idx, data):
     variable = variables[idx]
     # Maintain length of list
-    values[variable] = values[variable][1:] + [data]
+    values[variable] = data
     unit = units[idx]
-    message = "{}: {:.1f} {}".format(variable[:4], data, unit)
+    message = f"{variable[:4]}: {data} {unit}"
     logging.debug(message)
 
 # Get the temperature of the CPU for compensation
 def get_cpu_temperature():
-    process = Popen(['vcgencmd', 'measure_temp'], stdout=PIPE, universal_newlines=True)
-    output, _error = process.communicate()
+    with Popen(['vcgencmd', 'measure_temp'], stdout=PIPE, universal_newlines=True) as process:
+        output, _error = process.communicate()
     return float(output[output.index('=') + 1:output.rindex("'")])
+
+
+# try to write the data to influxdb with the current timestamp
+def write_to_influxdb():
+    json_body = []
+    current_time = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    for variable in variables:
+        json_body.append({
+                "measurement": variable,
+                "time": current_time,
+                "fields": {
+                    "Float_value": values[variable]
+                }
+            }
+        )
+
+    logging.info(json_body)
+    try:
+        client.write_points(json_body)
+    except requests.ConnectionError:
+        logging.info("Unable to connect to InfluxDB")
+
+
+# try to flush the data to the display and influxdb in one operation
+def flush_data():
+    display_everything()
+    write_to_influxdb()
 
 
 def main():
@@ -121,91 +142,56 @@ def main():
 
     cpu_temps = [get_cpu_temperature()] * 5
 
-    for v in variables:
-        values[v] = [1] * WIDTH
+    for variable in variables:
+        values[variable] = [1] * WIDTH
 
     while True:
-        current_time = time.strftime("%Y-%m-%dT%H:%M:%SZ")
-        json_body = []
         # Everything on one screen
         cpu_temp = get_cpu_temperature()
         # Smooth out with some averaging to decrease jitter
         cpu_temps = cpu_temps[1:] + [cpu_temp]
         avg_cpu_temp = sum(cpu_temps) / float(len(cpu_temps))
         raw_temp = bme280.get_temperature()
-        raw_data = raw_temp - ((avg_cpu_temp - raw_temp) / factor)
-        save_data(0, raw_data)
-        display_everything()
-        json_body.append({
-                "measurement": "temperature",
-                "time": current_time,
-                "fields": {
-                    "Float_value": raw_data
-                }
-            })
+        temperature = raw_temp - ((avg_cpu_temp - raw_temp) / factor)
+        save_data(0, temperature)
 
-        raw_data = bme280.get_pressure()
-        save_data(1, raw_data)
-        display_everything()
-        json_body.append({
-                "measurement": "pressure",
-                "time": current_time,
-                "fields": {
-                    "Float_value": raw_data
-                }
-            })
+        pressure = bme280.get_pressure()
+        save_data(1, pressure)
 
-        raw_data = bme280.get_humidity()
-        save_data(2, raw_data)
-        display_everything()
-        json_body.append({
-                "measurement": "humidity",
-                "time": current_time,
-                "fields": {
-                    "Float_value": raw_data
-                }
-            })
+        humidity = bme280.get_humidity()
+        save_data(2, humidity)
 
-        try:
-            client.write_points(json_body)
-        except ConnectionError:
-            logging.info("Unable to connect to InfluxDB")
-        logging.debug(json_body)
+        flush_data()
         time.sleep(1)
+
 
 # Loading screen to allow the temperature sensor to stabilise and the network to be up
 def startup():
-    message = ""
-    for x in range(10):
+    message = "Loading"
+    for _ in range(5):
         bme280.get_temperature()
         bme280.get_pressure()
         bme280.get_humidity()
-        time.sleep(1)
-
-        # New canvas to draw on.
-        draw = ImageDraw.Draw(img)
+        time.sleep(2)
 
         # Text settings.
-        font_size = 40
-        font = ImageFont.truetype(UserFont, font_size)
+        loading_font = ImageFont.truetype(UserFont, 40)
         text_colour = (255, 255, 255)
         back_colour = (235, 64, 52)
 
         message = message + "."
-        size_x, size_y = draw.textsize(message, font)
-        x = (WIDTH - size_x) / 2
-        y = (HEIGHT / 2) - (size_y / 2)
+        size_x, size_y = draw.textsize(message, loading_font)
+        x_center = (WIDTH - size_x) / 2
+        y_center = (HEIGHT / 2) - (size_y / 2)
 
         draw.rectangle((0, 0, 160, 80), back_colour)
-        draw.text((x, y), message, font=font, fill=text_colour)
+        draw.text((x_center, y_center), message, font=font, fill=text_colour)
         st7735.display(img)
 
-            
 
 if __name__ == "__main__":
     try:
         startup()
         main()
     except KeyboardInterrupt:
-        st7735.
         sys.exit(0)
