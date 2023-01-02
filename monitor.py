@@ -122,11 +122,11 @@ def write_to_influxdb():
             }
         )
 
-    logging.info(json_body)
+    logging.debug(json_body)
     try:
         client.write_points(json_body)
     except requests.ConnectionError:
-        logging.info("Unable to connect to InfluxDB")
+        logging.error("Unable to connect to InfluxDB")
 
 
 # try to flush the data to the display and influxdb in one operation
@@ -185,7 +185,7 @@ def startup():
         y_center = (HEIGHT / 2) - (size_y / 2)
 
         draw.rectangle((0, 0, 160, 80), back_colour)
-        draw.text((x_center, y_center), message, font=font, fill=text_colour)
+        draw.text((x_center, y_center), message, font=loading_font, fill=text_colour)
         st7735.display(img)
 
 
@@ -193,5 +193,6 @@ if __name__ == "__main__":
     try:
         startup()
         main()
-    except KeyboardInterrupt:
+    except:
+        st7735.set_backlight(0)
         sys.exit(0)
